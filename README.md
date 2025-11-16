@@ -1,8 +1,8 @@
-# ⚡ Smart Microgrid System
+# Smart Microgrid System
 
 An AI-powered smart microgrid control system with renewable energy integration, battery management, predictive analytics, and intelligent load management.
 
-## 🌟 Features
+## Features
 
 ### (a) Renewable Energy Input
 
@@ -43,7 +43,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
 - **Raspberry Pi**: Main controller (Python 3.x)
 - **3x Relays**: GPIO-controlled load switching (pins 17, 27, 22)
 
-## 📊 System Architecture
+## System Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -64,7 +64,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
     └──────────────────────────────────────────────┘
 ```
 
-## 🚀 Installation
+## Installation
 
 ### Prerequisites
 
@@ -105,7 +105,7 @@ pip install RPi.GPIO spidev adafruit-circuitpython-ina219
 5. **For Windows development (simulation)**
 The repository includes mock modules (`spidev.py`, `RPi/GPIO.py`, `board.py`, `busio.py`, `adafruit_ina219.py`) that simulate hardware for testing on non-Raspberry Pi systems.
 
-## 📁 Project Structure
+## Project Structure
 
 ```text
 smart-microgrid-system/
@@ -122,7 +122,7 @@ smart-microgrid-system/
 └── README.md                      # This file
 ```
 
-## 🎯 Usage
+## Usage
 
 ### Generate Training Data
 
@@ -163,7 +163,7 @@ python smartgrid.py
 
 Flask server at: `http://<raspberry-pi-ip>:5000`
 
-## 🤖 Machine Learning Models
+## Machine Learning Models
 
 ### Anomaly Detection
 
@@ -183,11 +183,11 @@ Flask server at: `http://<raspberry-pi-ip>:5000`
 
 ### Real-time Metrics
 
-- ☀️ Solar production (W, V, A)
-- 🔋 Battery SOC (%), charge/discharge rate
-- ⚡ Load demand per tier (W, V, A)
-- 🔌 Active load count
-- 🌡️ Weather conditions (cloud cover, temperature, wind)
+- Solar production (W, V, A)
+- Battery SOC (%), charge/discharge rate
+- Load demand per tier (W, V, A)
+- Active load count
+- Weather conditions (cloud cover, temperature, wind)
 
 ### Historical Analysis
 
@@ -205,7 +205,7 @@ Flask server at: `http://<raspberry-pi-ip>:5000`
 - Outage risk assessment
 - Load shedding recommendations
 
-## 🔧 Configuration
+## Configuration
 
 ### Battery Settings
 
@@ -235,7 +235,7 @@ zero_voltage = 1.65  # Zero current point
 sensitivity = 0.122   # 122mV/A (scaled from 185mV/A @ 5V)
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Import Errors on Windows
 
@@ -265,7 +265,7 @@ Update pandas/numpy/scikit-learn to latest versions:
 pip install --upgrade pandas numpy scikit-learn
 ```
 
-## 📊 Dataset Specifications
+## Dataset Specifications
 
 ### Sensor Data Format
 
@@ -284,7 +284,7 @@ solar_current,battery_soc,total_load_power,cloud_cover,weather,classification
 - **Solar Production**: 0-1000W
 - **Battery SOC**: 5-100%
 
-## 🔐 Hardware Wiring (Raspberry Pi)
+## Hardware Wiring (Raspberry Pi)
 
 ### GPIO Connections
 
@@ -304,20 +304,20 @@ solar_current,battery_soc,total_load_power,cloud_cover,weather,classification
 - SCL: GPIO 3 (Pin 5)
 - Address: 0x40 (default)
 
-## 📝 License
+## License
 
 This project is open source and available under the MIT License.
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## 📧 Contact
+## Contact
 
 - **Repository**: [roboditto/smart-microgrid-system](https://github.com/roboditto/smart-microgrid-system)
 - **Issues**: [GitHub Issues](https://github.com/roboditto/smart-microgrid-system/issues)
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Streamlit for the dashboard framework
 - Scikit-learn for ML algorithms
