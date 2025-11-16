@@ -1,9 +1,9 @@
-# Demo Setup
-
 import RPi.GPIO as GPIO
 import time
 import spidev
-from ina219 import INA219
+import board
+import busio
+from adafruit_ina219 import INA219
 from flask import Flask, render_template
 import plotly.graph_objects as go
 
@@ -38,7 +38,7 @@ ina = INA219(SHUNT_OHMS)
 ina.configure()
 
 def read_power(channel):
-    """Compute power for a load: voltage*current"""
+    """Compute power for a load in mW: voltage*current"""
     current = read_current(channel)
     voltage = ina.voltage()
     return voltage * current
