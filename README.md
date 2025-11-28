@@ -30,7 +30,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
 - **Priority Load Preservation**: Ensures critical loads remain powered during outages
 - **Battery State of Charge Management**: Intelligent charging/discharging based on available power
 
-## 🛠️ Hardware Components
+## Hardware Components
 
 ### Sensors
 
@@ -179,7 +179,7 @@ Flask server at: `http://<raspberry-pi-ip>:5000`
 - **Features**: Hour, solar production, total load power, battery SOC, cloud cover
 - **Output**: Battery SOC forecast + outage risk level (Low/Medium/High)
 
-## 📈 Monitoring Capabilities
+## Monitoring Capabilities
 
 ### Real-time Metrics
 
