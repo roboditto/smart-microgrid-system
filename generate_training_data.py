@@ -225,23 +225,23 @@ df = pd.DataFrame(data)
 output_file = 'microgrid_sensor_data.csv'
 df.to_csv(output_file, index=False)
 
-print(f"\n✅ Dataset generated successfully!")
-print(f"📁 Saved to: {output_file}")
-print(f"\n📊 Dataset Statistics:")
+print(f"\nDataset generated successfully!")
+print(f"Saved to: {output_file}")
+print(f"\nDataset Statistics:")
 print(f"  Total records: {len(df)}")
 print(f"  Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
 print(f"  Anomalies: {len(df[df['classification'] == 'ANOMALY'])} ({len(df[df['classification'] == 'ANOMALY'])/len(df)*100:.2f}%)")
-print(f"\n🔌 Load breakdown:")
+print(f"\n Load breakdown:")
 for tier in [1, 2, 3]:
     tier_data = df[df['tier'] == tier]
     print(f"  Tier {tier}: {len(tier_data)} records, avg power: {tier_data['power_watts'].mean():.2f}W")
 
-print(f"\n☀️ Solar production:")
+print(f"\nSolar production:")
 print(f"  Average: {df['solar_production'].mean():.2f}W")
 print(f"  Peak: {df['solar_production'].max():.2f}W")
 
-print(f"\n🔋 Battery SOC range: {df['battery_soc'].min():.1f}% - {df['battery_soc'].max():.1f}%")
+print(f"\nBattery SOC range: {df['battery_soc'].min():.1f}% - {df['battery_soc'].max():.1f}%")
 
 # Show sample data
-print(f"\n📋 Sample data (first 5 rows):")
+print(f"\nSample data (first 5 rows):")
 print(df.head().to_string())
