@@ -41,6 +41,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
 ### Control
 
 - **Raspberry Pi**: Main controller (Python 3.x)
+- **Arduino Uno r3**: Sensor data collection
 - **3x Relays**: GPIO-controlled load switching (pins 17, 27, 22)
 
 ## System Architecture
@@ -48,7 +49,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │                    Streamlit Dashboard                      │
-│  (Real-time Monitoring + AI Predictions + Control Panel)   │
+│  (Real-time Monitoring + AI Predictions + Control Panel)    │
 └─────────────────────────────────────────────────────────────┘
                             │
         ┌───────────────────┼───────────────────┐
@@ -60,7 +61,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
         │                   │                   │
     ┌───▼──────────────────▼───────────────────▼───┐
     │         Raspberry Pi Controller              │
-    │  (INA219, ACS712, MCP3008, GPIO Relays)     │
+    │  (INA219, ACS712, MCP3008, GPIO Relays)      │
     └──────────────────────────────────────────────┘
 ```
 
@@ -104,6 +105,10 @@ pip install RPi.GPIO spidev adafruit-circuitpython-ina219
 
 5. **For Windows development (simulation)**
 The repository includes mock modules (`spidev.py`, `RPi/GPIO.py`, `board.py`, `busio.py`, `adafruit_ina219.py`) that simulate hardware for testing on non-Raspberry Pi systems.
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Project Structure
 
