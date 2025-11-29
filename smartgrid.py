@@ -1,76 +1,142 @@
-import RPi.GPIO as GPIO
+import serial
 import time
-import spidev
-import board
-import busio
-from adafruit_ina219 import INA219
-from flask import Flask, render_template
-import plotly.graph_objects as go
 
-# GPIO Setup
-GPIO.setmode(GPIO.BCM)
-relay_pins = [17, 27, 22]  # Relays for loads
-for pin in relay_pins:
-    GPIO.setup(pin, GPIO.OUT)
-    GPIO.output(pin, GPIO.LOW)
+# --------------------------
+# SERIAL PORT CONFIGURATION
+# --------------------------
+# Adjust if needed:
+#   Windows: 'COM3'
+#   RPi / Linux: '/dev/ttyACM0' or '/dev/ttyUSB0'
+# --------------------------
+PORT = 'COM8'
+#PORT = "/dev/ttyACM0" uncomment for unix systems eg. RPi
+BAUD = 115200
 
-# MCP3008 Setup (for ACS712)
-spi = spidev.SpiDev()
-spi.open(0, 0)
-spi.max_speed_hz = 1350000
+# Global serial object
+ser = None
 
-def read_adc(channel):
-    """Read analog value from MCP3008"""
-    adc = spi.xfer2([1, (8+channel)<<4, 0])
-    data = ((adc[1]&3) << 8) + adc[2]
-    return data
+
+# --------------------------
+# 1. Initialize Serial
+# --------------------------
+def connect():
+    global ser
+    try:
+        ser = serial.Serial(PORT, BAUD, timeout=1)
+        time.sleep(2)  # Arduino resets on connection
+        print("Connected to Arduino on", PORT)
+    except Exception as e:
+        print("ERROR: Could not connect to Arduino:", e)
+        ser = None
+
+
+# Attempt initial connection
+connect()
+
+
+# --------------------------
+# 2. Read & Parse Arduino CSV
+# Format:
+# millis, V, mA, mW, ACS1(A), ACS2(A), relay_state
+# --------------------------
+def read_line():
+    """Reads one line from Arduino, reconnects if needed."""
+    global ser
+    if ser is None or not ser.is_open:
+        connect()
+
+    try:
+        line = ser.readline().decode().strip()
+        return line
+    except Exception:
+        connect()
+        return ""
+
+
+def read_packet():
+    """Parse CSV from Arduino into values dictionary."""
+    line = read_line()
+    parts = line.split(",")
+
+    if len(parts) != 7:
+        return None  # Bad packet
+
+    try:
+        return {
+            "millis":         int(parts[0]),
+            "voltage":        float(parts[1]),
+            "solar_current":  float(parts[2]) / 1000.0,  # mA -> A
+            "solar_power":    float(parts[3]) / 1000.0,  # mW -> W
+            "load1_current":  float(parts[4]),
+            "load2_current":  float(parts[5]),
+            "relay_state":    int(parts[6])
+        }
+    except:
+        return None
+
+
+# --------------------------
+# 3. Public Sensor Functions
+# --------------------------
+
+def read_voltage():
+    pkt = read_packet()
+    return pkt["voltage"] if pkt else 0.0
+
+
+def read_solar_current():
+    pkt = read_packet()
+    return pkt["solar_current"] if pkt else 0.0
+
+
+def read_solar_power():
+    pkt = read_packet()
+    return pkt["solar_power"] if pkt else 0.0
+
 
 def read_current(channel):
-    """Convert ADC value to Amps (ACS712 5A version)"""
-    adc_val = read_adc(channel)
-    voltage = (adc_val * 3.3) / 1023  # ADC to voltage
-    current = (voltage - 2.5) / 0.185  # ACS712 formula
-    return max(current, 0)
+    """channel: 0 or 1 -> ACS712 #1 or ACS712 #2"""
+    pkt = read_packet()
+    if not pkt:
+        return 0.0
 
-# INA219 Setup (for voltage)
-SHUNT_OHMS = 0.1
-ina = INA219(SHUNT_OHMS)
-ina.configure()
-
-def read_power(channel):
-    """Compute power for a load in mW: voltage*current"""
-    current = read_current(channel)
-    voltage = ina.voltage()
-    return voltage * current
-
-#  Threshold
-THRESHOLD = 25  # Watts
-
-# Flask Dashboard
-app = Flask(__name__)
-
-@app.route('/')
-def dashboard():
-    powers = [read_power(i) for i in range(len(relay_pins))]
-    total_power = sum(powers)
-
-    # Load management
-    if total_power > THRESHOLD:
-        for i, pin in enumerate(relay_pins):
-            if powers[i] < 15:  # non-critical loads
-                GPIO.output(pin, GPIO.LOW)
+    if channel == 0:
+        return pkt["load1_current"]
+    elif channel == 1:
+        return pkt["load2_current"]
     else:
-        for pin in relay_pins:
-            GPIO.output(pin, GPIO.HIGH)
+        return 0.0
 
-    # Plot graph
-    fig = go.Figure()
-    fig.add_bar(x=[f'Load {i+1}' for i in range(len(powers))], y=powers)
-    fig.update_layout(title=f'Total Power: {total_power:.2f} W')
-    graph_html = fig.to_html(full_html=False)
-    return render_template("dashboard.html", graph_html=graph_html)
 
+def read_relay_state():
+    pkt = read_packet()
+    return pkt["relay_state"] if pkt else 0
+
+
+# --------------------------
+# 4. Relay Command
+# --------------------------
+
+def set_relay(state: int):
+    """Send SETRELAY:0 or SETRELAY:1 to Arduino."""
+    global ser
+    if ser is None:
+        connect()
+
+    state = 1 if state else 0  # ensure valid
+    try:
+        ser.write(f"SETRELAY:{state}\n".encode())
+        time.sleep(0.1)
+    except:
+        connect()
+
+
+# --------------------------
+# Debug Runner
+# --------------------------
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=5000)
-
-# pip install RPi.GPIO to import RPI libraries
+    while True:
+        pkt = read_packet()
+        if pkt:
+            print(pkt)
+        time.sleep(1)

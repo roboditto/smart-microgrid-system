@@ -7,7 +7,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 import time
-import json
+import smartgrid
 
 # Page configuration
 st.set_page_config(
@@ -99,10 +99,9 @@ refresh_interval = 3  # Default value
 if auto_refresh:
     refresh_interval = st.sidebar.slider("Refresh interval (seconds)", 1, 10, 3)
 
-# Manual relay controls with tier labels
-st.sidebar.markdown("### 🔌 Load Control (Tiered)")
+# Simulated relay controls with tier labels
 relay_states = []
-for i in range(3):
+for i in range(2):
     tier_info = [t for t in LOAD_TIERS.values() if i in t['loads']][0]
     relay_states.append(
         st.sidebar.checkbox(
@@ -111,6 +110,21 @@ for i in range(3):
             help=f"Priority: {tier_info['priority']}"
         )
     )
+
+# Manual relay controls with tier labels
+st.sidebar.markdown("### 🔌 Real Load Control")
+
+# Read the physical relay state
+relay_state = smartgrid.read_relay_state()
+
+# Toggle
+relay_toggle = st.sidebar.checkbox("Load 1 Relay (ACS712 #1)", value=relay_state)
+
+if relay_toggle != relay_state:
+    smartgrid.set_relay(1 if relay_toggle else 0)
+
+# Load 2 has no relay – always on
+st.sidebar.info("Load 2 (ACS712 #2) is always ON")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🤖 AI Model Settings")
@@ -279,28 +293,43 @@ def get_sensor_data(simulation=True):
                 })
         return loads
     else:
-        # Import and use actual hardware readings
         try:
             import smartgrid
-            loads = []
-            for i in range(3):
-                current = smartgrid.read_current(i)
-                voltage = smartgrid.ina.voltage()
-                power = voltage * current
-                tier_info = [t for t in LOAD_TIERS.values() if i in t['loads']][0]
-                loads.append({
-                    'load_id': i + 1,
+
+            # Hardware readings
+            voltage = smartgrid.read_voltage()           # INA219 voltage
+            solar_current = smartgrid.read_solar_current()   # INA219 current
+            solar_power = smartgrid.read_solar_power()       # INA219 power
+
+            load1_current = smartgrid.read_current(0)   # ACS712 #1
+            load2_current = smartgrid.read_current(1)   # ACS712 #2
+
+            # Two loads only (ACS712 sensors)
+            loads = [
+                {
+                    'load_id': 1,
                     'voltage': round(voltage, 2),
-                    'current': round(current, 2),
-                    'power': round(power, 2),
-                    'state': relay_states[i],
-                    'tier': tier_info['priority']
-                })
+                    'current': round(load1_current, 3),
+                    'power': round(voltage * load1_current, 2),
+                    'state': smartgrid.read_relay_state(),
+                    'tier': 1
+                },
+                {
+                    'load_id': 2,
+                    'voltage': round(voltage, 2),
+                    'current': round(load2_current, 3),
+                    'power': round(voltage * load2_current, 2),
+                    'state': 1,    # Always ON (no relay 2)
+                    'tier': 2
+                }
+            ]
+
             return loads
+
         except Exception as e:
             st.error(f"Hardware read error: {e}")
             return []
-
+        
 # Detect island mode transition
 if not grid_connected and not st.session_state.island_mode_activated:
     st.session_state.island_mode_activated = True
@@ -348,6 +377,7 @@ with col1:
 
 with col2:
     battery_delta = net_battery_power
+
     st.metric(
         label="🔋 Battery SOC",
         value=f"{st.session_state.battery_soc:.1f}%",
@@ -363,9 +393,10 @@ with col3:
 
 with col4:
     active_loads = sum([1 for load in current_readings if load['state'] == 1])
+
     st.metric(
         label="🔌 Active Loads",
-        value=f"{active_loads}/3",
+        value=f"{active_loads}/2",
     )
 
 with col5:
@@ -522,7 +553,7 @@ with col1:
         # Line chart showing power over time
         fig = go.Figure()
         
-        for load_id in [1, 2, 3]:
+        for load_id in [1, 2]:
             load_data = df[df['load_id'] == load_id].tail(50)
             fig.add_trace(go.Scatter(
                 x=load_data['timestamp'],
