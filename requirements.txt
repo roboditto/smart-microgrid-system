@@ -4,5 +4,6 @@ plotly
 scikit-learn 
 numpy
 RPi.GPIO 
-spidev 
+spidev
+serial
 adafruit-circuitpython-ina219
