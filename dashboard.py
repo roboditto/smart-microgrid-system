@@ -7,7 +7,7 @@ import numpy as np
 from sklearn.ensemble import IsolationForest, RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 import time
-import json
+import smartgrid
 
 # Page configuration
 st.set_page_config(
@@ -61,7 +61,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Title
-st.markdown('<h1 class="main-header">⚡ AI-Powered Smart Microgrid Control System</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="main-header">⚡ AI-Powered Smart Microgrid System</h1>', unsafe_allow_html=True)
 st.markdown('<p style="text-align: center; color: gray; margin-top: -1rem;">Renewable Energy • Battery Storage • AI Predictions • Tiered Load Management • Island Mode</p>', unsafe_allow_html=True)
 
 # Sidebar controls
@@ -70,6 +70,23 @@ st.sidebar.markdown("---")
 
 # Simulation mode toggle
 simulation_mode = st.sidebar.checkbox("🔄 Simulation Mode", value=True, help="Enable simulation for testing on Windows")
+
+# Hardware serial controls
+use_hardware = st.sidebar.checkbox("Use Hardware Sensors", value=False, help="Read from actual connected sensors")
+serial_port = st.sidebar.text_input("Serial Port", value='COM8')
+baud_rate = st.sidebar.number_input("Baud Rate", value=115200, step=1)
+if st.sidebar.button("Connect Hardware"):
+    try:
+        smartgrid.connect(port=serial_port, baud=baud_rate)
+    except Exception as e:
+        st.sidebar.error(f"Connect failed: {e}")
+if st.sidebar.button("Disconnect Hardware"):
+    try:
+        smartgrid.disconnect()
+    except Exception as e:
+        st.sidebar.error(f"Disconnect failed: {e}")
+conn_status = smartgrid.is_connected() if hasattr(smartgrid, 'is_connected') else False
+st.sidebar.markdown("**Hardware Status:** " + ("✅ Connected" if conn_status else "❌ Not connected"))
 
 # Grid connection status
 st.sidebar.markdown("### 🔌 Grid Status")
@@ -99,10 +116,9 @@ refresh_interval = 3  # Default value
 if auto_refresh:
     refresh_interval = st.sidebar.slider("Refresh interval (seconds)", 1, 10, 3)
 
-# Manual relay controls with tier labels
-st.sidebar.markdown("### 🔌 Load Control (Tiered)")
+# Simulated relay controls with tier labels
 relay_states = []
-for i in range(3):
+for i in range(2):
     tier_info = [t for t in LOAD_TIERS.values() if i in t['loads']][0]
     relay_states.append(
         st.sidebar.checkbox(
@@ -111,6 +127,29 @@ for i in range(3):
             help=f"Priority: {tier_info['priority']}"
         )
     )
+
+# Manual relay controls with tier labels
+st.sidebar.markdown("### 🔌 Real Load Control (Relays)")
+
+# Read the physical relay states (guarded)
+try:
+    # Parse relay states from the 7th and 8th fields
+    pkt = smartgrid.read_packet()
+    relay1_state = pkt["relay_state"] if pkt else 0
+    relay2_state = pkt.get("relay2_state", 0) if pkt else 0
+except Exception:
+    relay1_state = 0
+    relay2_state = 0
+
+# Relay 1 Toggle
+relay1_toggle = st.sidebar.checkbox("Relay 1 (Load 1: LED + Fan)", value=bool(relay1_state))
+if relay1_toggle != bool(relay1_state):
+    smartgrid.set_relay(1 if relay1_toggle else 0, relay=1)
+
+# Relay 2 Toggle
+relay2_toggle = st.sidebar.checkbox("Relay 2 (Load 2: LED)", value=bool(relay2_state))
+if relay2_toggle != bool(relay2_state):
+    smartgrid.set_relay(1 if relay2_toggle else 0, relay=2)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🤖 AI Model Settings")
@@ -154,15 +193,25 @@ if 'prediction_model' not in st.session_state:
     st.session_state.prediction_model_trained = False
     st.session_state.scaler = StandardScaler()
 
-# Load historical training data
+# Load historical training data (prioritize hardware data over simulated)
 if 'historical_data' not in st.session_state:
     try:
-        st.session_state.historical_data = pd.read_csv('microgrid_sensor_data.csv')
+        # Try to load hardware data first (more valuable for training)
+        st.session_state.historical_data = pd.read_csv('hardware_sensor_data.csv')
         st.session_state.historical_data['timestamp'] = pd.to_datetime(st.session_state.historical_data['timestamp'])
         st.session_state.data_loaded = True
+        st.session_state.data_source = "Hardware"
     except FileNotFoundError:
-        st.session_state.historical_data = None
-        st.session_state.data_loaded = False
+        try:
+            # Fall back to simulated data
+            st.session_state.historical_data = pd.read_csv('microgrid_sensor_data.csv')
+            st.session_state.historical_data['timestamp'] = pd.to_datetime(st.session_state.historical_data['timestamp'])
+            st.session_state.data_loaded = True
+            st.session_state.data_source = "Simulated"
+        except FileNotFoundError:
+            st.session_state.historical_data = None
+            st.session_state.data_loaded = False
+            st.session_state.data_source = None
 
 # Function to get solar production
 def get_solar_production(simulation=True, weather_data=None):
@@ -279,28 +328,60 @@ def get_sensor_data(simulation=True):
                 })
         return loads
     else:
-        # Import and use actual hardware readings
         try:
             import smartgrid
-            loads = []
-            for i in range(3):
-                current = smartgrid.read_current(i)
-                voltage = smartgrid.ina.voltage()
-                power = voltage * current
-                tier_info = [t for t in LOAD_TIERS.values() if i in t['loads']][0]
-                loads.append({
-                    'load_id': i + 1,
-                    'voltage': round(voltage, 2),
-                    'current': round(current, 2),
-                    'power': round(power, 2),
-                    'state': relay_states[i],
-                    'tier': tier_info['priority']
-                })
+
+            # If user requested hardware and device not connected, try to connect
+            if use_hardware:
+                try:
+                    if not smartgrid.is_connected():
+                        smartgrid.connect(port=serial_port, baud=baud_rate)
+                except Exception as e:
+                    st.error(f"Hardware connect failed: {e}")
+                    return []
+
+            # Hardware readings
+            voltage = smartgrid.read_voltage()           # INA219 voltage
+            solar_current = smartgrid.read_solar_current()   # INA219 current
+            solar_power = smartgrid.read_solar_power()       # INA219 power
+
+            load1_current = smartgrid.read_current(0)   # ACS712 #1
+            load2_current = smartgrid.read_current(1)   # ACS712 #2
+
+            # Two loads only (ACS712 sensors)
+            # TEMPORARY: Use fixed 12V since INA219 not connected yet
+            # Once INA219 is wired to solar panel, it will read real voltage
+            bus_voltage = voltage if voltage > 0 else 12.0  # Fallback to 12V if INA219 reads 0
+            
+            # Use absolute values to handle reversed polarity on ACS712 sensors
+            load1_current_abs = abs(load1_current)
+            load2_current_abs = abs(load2_current)
+            
+            loads = [
+                {
+                    'load_id': 1,
+                    'voltage': round(bus_voltage, 2),
+                    'current': round(load1_current_abs, 3),
+                    'power': round(bus_voltage * load1_current_abs, 2),
+                    'state': smartgrid.read_relay_state(),
+                    'tier': 1
+                },
+                {
+                    'load_id': 2,
+                    'voltage': round(bus_voltage, 2),
+                    'current': round(load2_current_abs, 3),
+                    'power': round(bus_voltage * load2_current_abs, 2),
+                    'state': 1,    # Always ON (no relay 2)
+                    'tier': 2
+                }
+            ]
+
             return loads
+
         except Exception as e:
             st.error(f"Hardware read error: {e}")
             return []
-
+        
 # Detect island mode transition
 if not grid_connected and not st.session_state.island_mode_activated:
     st.session_state.island_mode_activated = True
@@ -348,6 +429,7 @@ with col1:
 
 with col2:
     battery_delta = net_battery_power
+
     st.metric(
         label="🔋 Battery SOC",
         value=f"{st.session_state.battery_soc:.1f}%",
@@ -363,9 +445,10 @@ with col3:
 
 with col4:
     active_loads = sum([1 for load in current_readings if load['state'] == 1])
+
     st.metric(
         label="🔌 Active Loads",
-        value=f"{active_loads}/3",
+        value=f"{active_loads}/2",
     )
 
 with col5:
@@ -407,7 +490,34 @@ st.session_state.solar_log.append({
     'current': solar_data['current']
 })
 
-# Keep only last 100 readings per load
+# Save hardware data to CSV for training when not in simulation mode
+if not simulation_mode and len(current_readings) > 0:
+    try:
+        # Prepare hardware data row
+        hardware_record = {
+            'timestamp': timestamp.isoformat(),
+            'ina219_voltage': solar_data['voltage'],
+            'ina219_current': solar_data['current'],
+            'ina219_power': solar_power,
+            'acs712_1_current': current_readings[0]['current'] if len(current_readings) > 0 else 0,
+            'acs712_2_current': current_readings[1]['current'] if len(current_readings) > 1 else 0,
+            'load1_power': current_readings[0]['power'] if len(current_readings) > 0 else 0,
+            'load2_power': current_readings[1]['power'] if len(current_readings) > 1 else 0,
+            'relay1_state': current_readings[0]['state'] if len(current_readings) > 0 else 0,
+            'relay2_state': current_readings[1]['state'] if len(current_readings) > 1 else 0,
+            'battery_soc': st.session_state.battery_soc,
+            'total_load_power': total_load_power,
+            'grid_connected': 1 if grid_connected else 0,
+            'hour': timestamp.hour
+        }
+        
+        # Append to CSV file
+        hardware_df = pd.DataFrame([hardware_record])
+        hardware_df.to_csv('hardware_sensor_data.csv', mode='a', header=False, index=False)
+    except Exception as e:
+        st.warning(f"Could not save hardware data: {e}")
+
+# Keep only last 100 readings per log
 if len(st.session_state.data_log) > 300:
     st.session_state.data_log = st.session_state.data_log[-300:]
 if len(st.session_state.battery_log) > 100:
@@ -522,7 +632,7 @@ with col1:
         # Line chart showing power over time
         fig = go.Figure()
         
-        for load_id in [1, 2, 3]:
+        for load_id in [1, 2]:
             load_data = df[df['load_id'] == load_id].tail(50)
             fig.add_trace(go.Scatter(
                 x=load_data['timestamp'],
@@ -584,7 +694,6 @@ with col2:
     st.markdown("**Priority Tiers:**")
     st.markdown("🔴 Tier 1: Critical (Medical, Refrigeration, Comms)")
     st.markdown("🟡 Tier 2: Essential (Lighting, Water Pumps)")
-    st.markdown("🟢 Tier 3: Non-Critical (Other Appliances)")
 
 # Machine Learning Analysis Section
 st.markdown("## 🤖 Smart AI Energy Controller")
@@ -599,40 +708,53 @@ with col1:
     if st.session_state.data_loaded and st.session_state.historical_data is not None:
         hist_df = st.session_state.historical_data
         
-        # Prepare features from historical data
-        feature_cols = ['ina219_voltage', 'acs712_current', 'power_watts', 'load_state', 
-                       'solar_production', 'battery_soc', 'hour']
-        X_hist = hist_df[feature_cols].values
+        # Prepare features from historical data (detect format)
+        if 'ina219_power' in hist_df.columns:
+            # Hardware data format
+            feature_cols = ['ina219_voltage', 'acs712_1_current', 'acs712_2_current', 'total_load_power', 
+                           'ina219_power', 'battery_soc', 'hour']
+        else:
+            # Legacy simulated data format
+            feature_cols = ['ina219_voltage', 'acs712_current', 'power_watts', 'solar_production', 
+                           'battery_soc', 'hour']
         
-        # Train anomaly detection model
-        if not st.session_state.anomaly_model_trained:
-            st.session_state.anomaly_model.fit(X_hist)
-            st.session_state.anomaly_model_trained = True
+        # Filter to available columns
+        available_cols = [col for col in feature_cols if col in hist_df.columns]
         
-        st.success(f"✅ Model Trained on {len(hist_df):,} historical samples")
-        
-        # Show historical anomaly stats
-        hist_anomalies = len(hist_df[hist_df['classification'] == 'ANOMALY'])
-        st.metric("Historical Anomalies", f"{hist_anomalies} ({hist_anomalies/len(hist_df)*100:.2f}%)")
-        
-        # Predict on current data if available
-        if len(df) > 0:
-            # Match feature columns for current data
-            current_features = []
-            for _, row in df.tail(1).iterrows():
-                current_features.append([
-                    row['voltage'],
-                    row['current'], 
-                    row['power'],
-                    row['state'],
-                    solar_power,
-                    st.session_state.battery_soc,
-                    datetime.now().hour
-                ])
+        if len(available_cols) > 0:
+            X_hist = hist_df[available_cols].values
             
-            prediction = st.session_state.anomaly_model.predict(current_features)
-            latest_prediction = "🚨 ANOMALY DETECTED" if prediction[0] == -1 else "✅ Normal Operation"
-            st.info(f"Latest Reading: {latest_prediction}")
+            # Train anomaly detection model
+            if not st.session_state.anomaly_model_trained:
+                st.session_state.anomaly_model.fit(X_hist)
+                st.session_state.anomaly_model_trained = True
+            
+            st.success(f"✅ Model Trained on {len(hist_df):,} historical samples ({len(available_cols)} features)")
+            
+            # Show historical stats if available
+            if 'classification' in hist_df.columns:
+                hist_anomalies = len(hist_df[hist_df['classification'] == 'ANOMALY'])
+                st.metric("Historical Anomalies", f"{hist_anomalies} ({hist_anomalies/len(hist_df)*100:.2f}%)")
+            else:
+                st.metric("Data Points", f"{len(hist_df):,}")
+            
+            # Predict on current data if available
+            if len(df) > 0:
+                # Match available feature columns for current data
+                current_features = []
+                for _, row in df.tail(1).iterrows():
+                    try:
+                        feature_vals = [row[col] if col in row.index else 0 for col in available_cols]
+                        current_features.append(feature_vals)
+                    except:
+                        pass
+                
+                if len(current_features) > 0:
+                    prediction = st.session_state.anomaly_model.predict(current_features)
+                    latest_prediction = "🚨 ANOMALY DETECTED" if prediction[0] == -1 else "✅ Normal Operation"
+                    st.info(f"Latest Reading: {latest_prediction}")
+        else:
+            st.warning("⚠️ Data format not recognized. Columns missing.")
     
     elif len(df) > 10:
         # Fallback to live data only
@@ -665,7 +787,8 @@ with col1:
     else:
         st.warning("⏳ Collecting data... Need at least 10 samples to train model")
         if not st.session_state.data_loaded:
-            st.info("💡 Run `generate_training_data.py` to create historical dataset")
+            data_hint = "Hardware" if not simulation_mode else "simulated"
+            st.info(f"💡 Turn off simulation mode to collect {data_hint} data, or run `generate_training_data.py`")
 
 with col2:
     st.markdown("### Outage Prediction & Energy Forecast")
@@ -673,99 +796,147 @@ with col2:
     if enable_predictions and st.session_state.data_loaded and st.session_state.historical_data is not None:
         hist_df = st.session_state.historical_data
         
-        # Train predictive model on historical data
+        # Train predictive model on historical data (detect format)
         if not st.session_state.prediction_model_trained:
-            # Features for prediction
-            pred_features = ['hour', 'solar_production', 'total_load_power', 'battery_soc', 'cloud_cover']
-            X_train = hist_df[pred_features].values
-            y_train = hist_df['battery_soc'].shift(-12).ffill().to_numpy()  # Predict 1 hour ahead
+            # Detect data format and use appropriate features
+            if 'ina219_power' in hist_df.columns:
+                # Hardware data format
+                pred_features = ['hour', 'ina219_power', 'total_load_power', 'battery_soc']
+            else:
+                # Legacy format - check if all columns exist
+                pred_features = ['hour', 'solar_production', 'total_load_power', 'battery_soc']
+                if 'cloud_cover' in hist_df.columns:
+                    pred_features.append('cloud_cover')
             
-            # Scale features
-            X_train_scaled = st.session_state.scaler.fit_transform(X_train)
+            # Filter to available columns
+            available_features = [col for col in pred_features if col in hist_df.columns]
             
-            # Train model
-            st.session_state.prediction_model.fit(X_train_scaled, y_train)
-            st.session_state.prediction_model_trained = True
+            if len(available_features) >= 3:  # Need at least 3 features
+                X_train = hist_df[available_features].values
+                y_train = hist_df['battery_soc'].shift(-12).to_numpy()  # Predict 12 samples ahead
+                
+                # Remove NaN rows (from the shift operation)
+                valid_indices = ~(np.isnan(X_train).any(axis=1) | np.isnan(y_train))
+                X_train = X_train[valid_indices]
+                y_train = y_train[valid_indices]
+                
+                if len(X_train) >= 3:
+                    # Scale features
+                    X_train_scaled = st.session_state.scaler.fit_transform(X_train)
+                    
+                    # Train model
+                    st.session_state.prediction_model.fit(X_train_scaled, y_train)
+                    st.session_state.prediction_model_trained = True
+                    st.success(f"✅ Prediction model trained on {len(X_train)} samples with {len(available_features)} features")
+                else:
+                    st.warning(f"⚠️ Not enough valid training samples after NaN removal ({len(X_train)} < 3)")
+            else:
+                st.warning(f"⚠️ Not enough features for prediction (need 3, have {len(available_features)})")
         
         # Make predictions
-        import generate_training_data
         current_hour = datetime.now().hour
         future_predictions = []
         
-        for hours_ahead in range(1, 7):
-            future_hour = (current_hour + hours_ahead) % 24
+        if st.session_state.prediction_model_trained:
+            # Re-detect features for prediction
+            if 'ina219_power' in hist_df.columns:
+                pred_features = ['hour', 'ina219_power', 'total_load_power', 'battery_soc']
+            else:
+                pred_features = ['hour', 'solar_production', 'total_load_power', 'battery_soc']
+                if 'cloud_cover' in hist_df.columns:
+                    pred_features.append('cloud_cover')
             
-            # Estimate future solar (simplified)
-            future_solar = get_solar_production(simulation_mode, st.session_state.weather_data)['production'] if simulation_mode else solar_power
+            available_features = [col for col in pred_features if col in hist_df.columns]
             
-            # Predict features
-            pred_input = np.array([[
-                future_hour,
-                future_solar,
-                total_load_power,
-                st.session_state.battery_soc if hours_ahead == 1 else future_predictions[-1],
-                st.session_state.weather_data['cloud_cover']
-            ]])
+            for hours_ahead in range(1, 7):
+                future_hour = (current_hour + hours_ahead) % 24
+                
+                # Estimate future solar/power (simplified)
+                future_power = get_solar_production(simulation_mode, st.session_state.weather_data)['production'] if simulation_mode else solar_power
+                
+                # Build prediction features
+                pred_vals = [
+                    future_hour,
+                    future_power,
+                    total_load_power,
+                    st.session_state.battery_soc if hours_ahead == 1 else future_predictions[-1],
+                ]
+                
+                # Add cloud cover if available
+                if 'cloud_cover' in available_features:
+                    pred_vals.append(st.session_state.weather_data.get('cloud_cover', 20))
+                
+                # Filter to available features
+                pred_input = np.array([[pred_vals[i] for i, feat in enumerate(pred_features) if feat in available_features]])
+                
+                try:
+                    pred_input_scaled = st.session_state.scaler.transform(pred_input)
+                    predicted_soc = st.session_state.prediction_model.predict(pred_input_scaled)[0]
+                    future_predictions.append(np.clip(predicted_soc, 0, 100))
+                except:
+                    # If prediction fails, use linear extrapolation
+                    if len(future_predictions) > 0:
+                        future_predictions.append(future_predictions[-1])
+                    else:
+                        future_predictions.append(st.session_state.battery_soc)
             
-            pred_input_scaled = st.session_state.scaler.transform(pred_input)
-            predicted_soc = st.session_state.prediction_model.predict(pred_input_scaled)[0]
-            future_predictions.append(np.clip(predicted_soc, 0, 100))
-        
-        # Outage risk assessment
-        min_predicted_soc = min(future_predictions)
-        outage_risk = "Low"
-        risk_color = "green"
-        
-        if min_predicted_soc < battery_min_soc:
-            outage_risk = "High"
-            risk_color = "red"
-        elif min_predicted_soc < 40:
-            outage_risk = "Medium"
-            risk_color = "orange"
-        
-        st.metric(
-            "Outage Risk (Next 6h)",
-            outage_risk,
-            delta=f"Predicted min SOC: {min_predicted_soc:.1f}%"
-        )
-        
-        if outage_risk == "High":
-            st.error("⚠️ **Warning**: High risk of power shortage. Consider reducing non-critical loads.")
-        elif outage_risk == "Medium":
-            st.warning("⚡ **Caution**: Battery running low. Monitor closely.")
+            # Outage risk assessment
+            min_predicted_soc = min(future_predictions) if len(future_predictions) > 0 else st.session_state.battery_soc
+            outage_risk = "Low"
+            risk_color = "green"
+            
+            if min_predicted_soc < battery_min_soc:
+                outage_risk = "High"
+                risk_color = "red"
+            elif min_predicted_soc < 40:
+                outage_risk = "Medium"
+                risk_color = "orange"
+            
+            st.metric(
+                "Outage Risk (Next 6h)",
+                outage_risk,
+                delta=f"Predicted min SOC: {min_predicted_soc:.1f}%"
+            )
+            
+            if outage_risk == "High":
+                st.error("⚠️ **Warning**: High risk of power shortage. Consider reducing non-critical loads.")
+            elif outage_risk == "Medium":
+                st.warning("⚡ **Caution**: Battery running low. Monitor closely.")
+            else:
+                st.success("✅ **Stable**: Sufficient power reserves.")
+            
+            # Energy forecast chart
+            future_times = [datetime.now() + timedelta(hours=i) for i in range(1, 7)]
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=future_times,
+                y=future_predictions,
+                mode='lines+markers',
+                name='AI Predicted SOC',
+                line=dict(color='blue', width=3),
+                marker=dict(size=8)
+            ))
+            
+            fig.add_hline(
+                y=battery_min_soc,
+                line_dash="dot",
+                line_color="red",
+                annotation_text="Min SOC",
+                annotation_position="right"
+            )
+            
+            fig.update_layout(
+                title="AI-Powered 6-Hour Battery Forecast",
+                xaxis_title="Time",
+                yaxis_title="Battery SOC (%)",
+                height=250,
+                yaxis_range=[0, 100]
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.success("✅ **Stable**: Sufficient power reserves.")
-        
-        # Energy forecast chart
-        future_times = [datetime.now() + timedelta(hours=i) for i in range(1, 7)]
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=future_times,
-            y=future_predictions,
-            mode='lines+markers',
-            name='AI Predicted SOC',
-            line=dict(color='blue', width=3),
-            marker=dict(size=8)
-        ))
-        
-        fig.add_hline(
-            y=battery_min_soc,
-            line_dash="dot",
-            line_color="red",
-            annotation_text="Min SOC",
-            annotation_position="right"
-        )
-        
-        fig.update_layout(
-            title="AI-Powered 6-Hour Battery Forecast",
-            xaxis_title="Time",
-            yaxis_title="Battery SOC (%)",
-            height=250,
-            yaxis_range=[0, 100]
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+            st.info("⏳ Waiting for predictions to be available...")
         
     elif enable_predictions and len(df) > 10:
         # Prepare features for prediction
@@ -884,52 +1055,172 @@ st.markdown("## 📜 Historical Data Analysis")
 
 if st.session_state.data_loaded and st.session_state.historical_data is not None:
     historical_df = st.session_state.historical_data
+    data_source = st.session_state.data_source if hasattr(st.session_state, 'data_source') else "Unknown"
     
-    col1, col2, col3 = st.columns(3)
+    st.info(f"📊 Data Source: **{data_source}** | Total Samples: **{len(historical_df)}**")
     
-    with col1:
-        st.markdown("### 📊 Sensor Data Overview")
+    # For hardware data, show different analysis
+    if 'ina219_voltage' in historical_df.columns:
+        # Hardware data format
+        col1, col2, col3 = st.columns(3)
         
-        # Classification distribution
-        classification_counts = historical_df['classification'].value_counts()
-        fig = px.pie(
-            values=classification_counts.values,
-            names=classification_counts.index,
-            title="Normal vs Anomaly Events",
-            color_discrete_map={'NORMAL': 'green', 'ANOMALY': 'red'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        with col1:
+            st.markdown("### ⚡ Load Current Analysis")
+            
+            fig = go.Figure()
+            fig.add_trace(go.Histogram(
+                x=historical_df['acs712_1_current'],
+                name='Load 1 (LED+Fan)',
+                opacity=0.7
+            ))
+            fig.add_trace(go.Histogram(
+                x=historical_df['acs712_2_current'],
+                name='Load 2 (LED)',
+                opacity=0.7
+            ))
+            fig.update_layout(
+                title="Current Distribution",
+                xaxis_title="Current (A)",
+                yaxis_title="Frequency",
+                barmode='overlay'
+            )
+            st.plotly_chart(fig, use_container_width=True)
         
-    with col2:
-        st.markdown("### ⚡ Power Consumption Patterns")
+        with col2:
+            st.markdown("### ☀️ Solar Production")
+            
+            fig = px.histogram(
+                historical_df,
+                x='ina219_power',
+                nbins=30,
+                title="Solar Power Distribution",
+                labels={'ina219_power': 'Power (W)'},
+                color_discrete_sequence=['orange']
+            )
+            st.plotly_chart(fig, use_container_width=True)
         
-        # Average power by tier
-        tier_power = historical_df.groupby('tier')['power_watts'].mean()
-        fig = px.bar(
-            x=['Tier 1 (Critical)', 'Tier 2 (Essential)', 'Tier 3 (Non-Critical)'],
-            y=tier_power.values,
-            title="Average Power by Load Tier",
-            labels={'x': 'Load Tier', 'y': 'Power (W)'},
-            color=tier_power.values,
-            color_continuous_scale='reds'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        with col3:
+            st.markdown("### 🔋 Battery SOC")
+            
+            fig = px.histogram(
+                historical_df,
+                x='battery_soc',
+                nbins=20,
+                title="Battery State of Charge Distribution",
+                labels={'battery_soc': 'SOC (%)'},
+                color_discrete_sequence=['green']
+            )
+            st.plotly_chart(fig, use_container_width=True)
         
-    with col3:
+        # Detailed hardware statistics
+        st.markdown("### 🔬 Hardware Sensor Statistics")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**INA219 Voltage**")
+            st.write(f"Mean: {historical_df['ina219_voltage'].mean():.2f} V")
+            st.write(f"Min: {historical_df['ina219_voltage'].min():.2f} V")
+            st.write(f"Max: {historical_df['ina219_voltage'].max():.2f} V")
+            st.write(f"Std Dev: {historical_df['ina219_voltage'].std():.3f} V")
+        
+        with col2:
+            st.markdown("**ACS712 Load 1**")
+            st.write(f"Mean: {historical_df['acs712_1_current'].mean():.3f} A")
+            st.write(f"Min: {historical_df['acs712_1_current'].min():.3f} A")
+            st.write(f"Max: {historical_df['acs712_1_current'].max():.3f} A")
+            st.write(f"Std Dev: {historical_df['acs712_1_current'].std():.3f} A")
+        
+        with col3:
+            st.markdown("**ACS712 Load 2**")
+            st.write(f"Mean: {historical_df['acs712_2_current'].mean():.3f} A")
+            st.write(f"Min: {historical_df['acs712_2_current'].min():.3f} A")
+            st.write(f"Max: {historical_df['acs712_2_current'].max():.3f} A")
+            st.write(f"Std Dev: {historical_df['acs712_2_current'].std():.3f} A")
+        
+        # Time-based trends
         st.markdown("### 📈 Time-based Patterns")
         
-        # Power by hour of day
-        hourly_power = historical_df.groupby('hour')['power_watts'].mean()
-        fig = px.line(
-            x=hourly_power.index,
-            y=hourly_power.values,
-            title="Average Load by Hour",
-            labels={'x': 'Hour of Day', 'y': 'Power (W)'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            hourly_power = historical_df.groupby('hour')['ina219_power'].mean()
+            fig = px.line(
+                x=hourly_power.index,
+                y=hourly_power.values,
+                title="Average Solar Power by Hour",
+                labels={'x': 'Hour of Day', 'y': 'Power (W)'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            hourly_soc = historical_df.groupby('hour')['battery_soc'].mean()
+            fig = px.line(
+                x=hourly_soc.index,
+                y=hourly_soc.values,
+                title="Average Battery SOC by Hour",
+                labels={'x': 'Hour of Day', 'y': 'SOC (%)'}
+            )
+            fig.update_traces(line=dict(color='green'))
+            st.plotly_chart(fig, use_container_width=True)
     
-    # Detailed sensor statistics
-    st.markdown("### 🔬 Sensor Statistics (ACS712 & INA219)")
+    else:
+        # Legacy simulated data format
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("### 📊 Sensor Data Overview")
+            
+            # Classification distribution (safe check)
+            if 'classification' in historical_df.columns:
+                classification_counts = historical_df['classification'].value_counts()
+                fig = px.pie(
+                    values=classification_counts.values,
+                    names=classification_counts.index,
+                    title="Normal vs Anomaly Events",
+                    color_discrete_map={'NORMAL': 'green', 'ANOMALY': 'red'}
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No classification data available")
+            
+        with col2:
+            st.markdown("### ⚡ Power Consumption Patterns")
+            
+            # Average power by tier (safe check)
+            if 'tier' in historical_df.columns and 'power_watts' in historical_df.columns:
+                tier_power = historical_df.groupby('tier')['power_watts'].mean()
+                fig = px.bar(
+                    x=['Tier 1 (Critical)', 'Tier 2 (Essential)', 'Tier 3 (Non-Critical)'],
+                    y=tier_power.values,
+                    title="Average Power by Load Tier",
+                    labels={'x': 'Load Tier', 'y': 'Power (W)'},
+                    color=tier_power.values,
+                    color_continuous_scale='reds'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Tier power data not available")
+            
+        with col3:
+            st.markdown("### 📈 Time-based Patterns")
+            
+            # Power by hour of day (safe check)
+            if 'hour' in historical_df.columns and 'power_watts' in historical_df.columns:
+                hourly_power = historical_df.groupby('hour')['power_watts'].mean()
+                fig = px.line(
+                    x=hourly_power.index,
+                    y=hourly_power.values,
+                    title="Average Load by Hour",
+                    labels={'x': 'Hour of Day', 'y': 'Power (W)'}
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Hourly pattern data not available")
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Detailed sensor statistics (legacy format)
+        st.markdown("### 🔬 Sensor Statistics (ACS712 & INA219)")
     
     col1, col2, col3 = st.columns(3)
     
@@ -941,16 +1232,37 @@ if st.session_state.data_loaded and st.session_state.historical_data is not None
         st.write(f"Std Dev: {historical_df['ina219_voltage'].std():.2f} V")
     
     with col2:
-        st.markdown("**ACS712 Current Sensor**")
-        st.write(f"Mean: {historical_df['acs712_current'].mean():.3f} A")
-        st.write(f"Min: {historical_df['acs712_current'].min():.3f} A")
-        st.write(f"Max: {historical_df['acs712_current'].max():.3f} A")
-        st.write(f"ADC Range: {historical_df['acs712_adc'].min()}-{historical_df['acs712_adc'].max()}")
+        st.markdown("**Current Sensor**")
+        # Handle both hardware (ACS712_1) and legacy (acs712_current) formats
+        if 'acs712_1_current' in historical_df.columns:
+            mean_current = historical_df['acs712_1_current'].mean()
+            min_current = historical_df['acs712_1_current'].min()
+            max_current = historical_df['acs712_1_current'].max()
+            st.write(f"Mean (Load 1): {mean_current:.3f} A")
+            st.write(f"Min (Load 1): {min_current:.3f} A")
+            st.write(f"Max (Load 1): {max_current:.3f} A")
+        elif 'acs712_current' in historical_df.columns:
+            st.write(f"Mean: {historical_df['acs712_current'].mean():.3f} A")
+            st.write(f"Min: {historical_df['acs712_current'].min():.3f} A")
+            st.write(f"Max: {historical_df['acs712_current'].max():.3f} A")
+            if 'acs712_adc' in historical_df.columns:
+                st.write(f"ADC Range: {historical_df['acs712_adc'].min()}-{historical_df['acs712_adc'].max()}")
+        else:
+            st.write("No current sensor data available")
     
     with col3:
         st.markdown("**Power Measurements**")
-        st.write(f"Mean: {historical_df['power_watts'].mean():.2f} W")
-        st.write(f"Peak: {historical_df['power_watts'].max():.2f} W")
+        # Handle both hardware (ina219_power, total_load_power) and legacy (power_watts) formats
+        if 'total_load_power' in historical_df.columns:
+            power_col = 'total_load_power'
+        elif 'power_watts' in historical_df.columns:
+            power_col = 'power_watts'
+        else:
+            power_col = None
+        
+        if power_col:
+            st.write(f"Mean: {historical_df[power_col].mean():.2f} W")
+            st.write(f"Peak: {historical_df[power_col].max():.2f} W")
         st.write(f"Total Samples: {len(historical_df):,}")
         st.write(f"Date Range: {(historical_df['timestamp'].max() - historical_df['timestamp'].min()).days} days")
     
@@ -960,23 +1272,36 @@ if st.session_state.data_loaded and st.session_state.historical_data is not None
     col1, col2 = st.columns(2)
     
     with col1:
-        # Solar production by hour
-        solar_by_hour = historical_df.groupby('hour')['solar_production'].mean()
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=solar_by_hour.index,
-            y=solar_by_hour.values,
-            fill='tozeroy',
-            name='Solar Production',
-            line=dict(color='orange')
-        ))
-        fig.update_layout(
-            title="Average Solar Production by Hour",
-            xaxis_title="Hour of Day",
-            yaxis_title="Power (W)",
-            height=300
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        # Solar/power production by hour
+        # Detect which column to use based on data format
+        if 'ina219_power' in historical_df.columns:
+            production_col = 'ina219_power'
+            title = "Average Solar Production by Hour (INA219)"
+            color = 'gold'
+        elif 'solar_production' in historical_df.columns:
+            production_col = 'solar_production'
+            title = "Average Solar Production by Hour"
+            color = 'orange'
+        else:
+            production_col = None
+        
+        if production_col:
+            production_by_hour = historical_df.groupby('hour')[production_col].mean()
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=production_by_hour.index,
+                y=production_by_hour.values,
+                fill='tozeroy',
+                name='Production',
+                line=dict(color=color)
+            ))
+            fig.update_layout(
+                title=title,
+                xaxis_title="Hour of Day",
+                yaxis_title="Power (W)",
+                height=300
+            )
+            st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         # Battery SOC distribution
@@ -992,16 +1317,27 @@ if st.session_state.data_loaded and st.session_state.historical_data is not None
     
     # Recent anomalies
     st.markdown("### 🚨 Recent Anomalies")
-    anomaly_events = historical_df[historical_df['classification'] == 'ANOMALY'].tail(20)
     
-    if len(anomaly_events) > 0:
-        st.dataframe(
-            anomaly_events[['timestamp', 'tier', 'ina219_voltage', 'acs712_current', 'power_watts', 'battery_soc']],
-            use_container_width=True,
-            hide_index=True
-        )
+    if 'classification' in historical_df.columns:
+        anomaly_events = historical_df[historical_df['classification'] == 'ANOMALY'].tail(20)
+        
+        if len(anomaly_events) > 0:
+            # Select available columns based on data format
+            display_cols = ['timestamp', 'tier'] if 'tier' in anomaly_events.columns else ['timestamp']
+            # Add available sensor columns
+            for col in ['ina219_voltage', 'acs712_1_current', 'acs712_current', 'total_load_power', 'power_watts', 'battery_soc']:
+                if col in anomaly_events.columns:
+                    display_cols.append(col)
+            
+            st.dataframe(
+                anomaly_events[display_cols],
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.success("No anomalies detected in dataset!")
     else:
-        st.success("No anomalies detected in dataset!")
+        st.info("Classification data not available for hardware sensor data")
 
 else:
     # Fallback to old CSV if new data not available
@@ -1084,7 +1420,6 @@ with col3:
     tier_3_active = sum([1 for l in current_readings if l['tier'] == 3 and l['state']])
     st.write(f"**Tier 1 (Critical):** {tier_1_active} active")
     st.write(f"**Tier 2 (Essential):** {tier_2_active} active")
-    st.write(f"**Tier 3 (Non-Critical):** {tier_3_active} active")
 
 st.markdown("### Recent Sensor Readings")
 if len(df) > 0:

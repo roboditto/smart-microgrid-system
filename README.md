@@ -1,6 +1,6 @@
 # Smart Microgrid System
 
-An AI-powered smart microgrid control system with renewable energy integration, battery management, predictive analytics, and intelligent load management.
+An AI-powered smart microgrid system with renewable energy integration, battery management, predictive analytics, and intelligent load management.
 
 ## Features
 
@@ -30,7 +30,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
 - **Priority Load Preservation**: Ensures critical loads remain powered during outages
 - **Battery State of Charge Management**: Intelligent charging/discharging based on available power
 
-## 🛠️ Hardware Components
+## Hardware Components
 
 ### Sensors
 
@@ -41,6 +41,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
 ### Control
 
 - **Raspberry Pi**: Main controller (Python 3.x)
+- **Arduino Uno r3**: Sensor data collection
 - **3x Relays**: GPIO-controlled load switching (pins 17, 27, 22)
 
 ## System Architecture
@@ -48,7 +49,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │                    Streamlit Dashboard                      │
-│  (Real-time Monitoring + AI Predictions + Control Panel)   │
+│  (Real-time Monitoring + AI Predictions + Control Panel)    │
 └─────────────────────────────────────────────────────────────┘
                             │
         ┌───────────────────┼───────────────────┐
@@ -60,7 +61,7 @@ An AI-powered smart microgrid control system with renewable energy integration, 
         │                   │                   │
     ┌───▼──────────────────▼───────────────────▼───┐
     │         Raspberry Pi Controller              │
-    │  (INA219, ACS712, MCP3008, GPIO Relays)     │
+    │  (INA219, ACS712, MCP3008, GPIO Relays)      │
     └──────────────────────────────────────────────┘
 ```
 
@@ -104,6 +105,10 @@ pip install RPi.GPIO spidev adafruit-circuitpython-ina219
 
 5. **For Windows development (simulation)**
 The repository includes mock modules (`spidev.py`, `RPi/GPIO.py`, `board.py`, `busio.py`, `adafruit_ina219.py`) that simulate hardware for testing on non-Raspberry Pi systems.
+
+```bash
+pip install -r requirements.txt
+```
 
 ## Project Structure
 
@@ -179,7 +184,7 @@ Flask server at: `http://<raspberry-pi-ip>:5000`
 - **Features**: Hour, solar production, total load power, battery SOC, cloud cover
 - **Output**: Battery SOC forecast + outage risk level (Low/Medium/High)
 
-## 📈 Monitoring Capabilities
+## Monitoring Capabilities
 
 ### Real-time Metrics
 
@@ -194,6 +199,93 @@ Flask server at: `http://<raspberry-pi-ip>:5000`
 - Classification distribution (Normal vs Anomaly)
 - Power consumption by tier
 - Hourly load patterns
+
+## Hardware Wiring & Calibration
+
+- **INA219 (Voltage/Current Sensor)**:
+  - `VCC` -> Arduino/RPi `5V`
+  - `GND` -> Common ground
+  - `SDA` -> Arduino `A4` (SDA)
+  - `SCL` -> Arduino `A5` (SCL)
+  - `VIN+` -> Positive side of the solar panel / power supply input
+  - `VIN-` -> Negative side of the solar panel / power supply input (or return)
+  - Note: The INA219 must be placed in series with the supply input to measure solar/battery power. If `VIN+`/`VIN-` are left disconnected the dashboard will fall back to a fixed-voltage assumption for simulated power (12V fallback).
+
+- **ACS712 (Current Sensors, 5A module recommended)**:
+  - Wire the load through the ACS712 sensing terminals (not the VCC/GND pins). The current path must pass through the sensor in the correct direction.
+  - If measured load is negative, the sensor is oriented backwards — swap the two wires in the sensing path or take the absolute value in software (the dashboard temporarily uses `abs()` for display).
+  - Calibration constants (per this repository's hardware testing):
+    - `ACS_ZERO` = 2.80 V (measured midpoint voltage on this setup)
+    - `ACS_SENSITIVITY` = 0.185 V/A (5A module)
+
+- **Relays (Arduino Uno pins used in firmware)**:
+  - `RELAY1_PIN` -> Arduino digital pin `2` (IN1)
+  - `RELAY2_PIN` -> Arduino digital pin `4` (IN2)
+  - Note: Older README notes listed different GPIO pins (Raspberry Pi mapping) — the Arduino sketch currently uses pins `2` and `4` for relays.
+
+## Serial & Dashboard (Running)
+
+- Default serial port (in `smartgrid.py`): `COM8` on Windows. Update `PORT` or pass an alternate port when connecting.
+
+- Recommended workflow (in project root):
+
+```powershell
+# activate virtualenv on Windows
+venv\Scripts\activate
+# install dependencies
+pip install -r requirements.txt
+# run Streamlit dashboard
+streamlit run dashboard.py
+```
+
+- If `streamlit` is not on your PATH but you use the project venv, run:
+
+```powershell
+# Windows (use the venv python to run streamlit)
+& "<path-to-venv>\Scripts\python.exe" -m streamlit run dashboard.py
+```
+
+- To collect real hardware training data: turn **off** Simulation Mode in the dashboard, ensure the Arduino is connected (select the proper COM port), then the app will append rows to `hardware_sensor_data.csv` automatically when readings are available.
+
+## CSV / Data Formats
+
+- **Hardware CSV**: `hardware_sensor_data.csv` — header (current):
+
+```
+timestamp,ina219_voltage,ina219_current,ina219_power,acs712_1_current,acs712_2_current,load1_power,load2_power,relay1_state,relay2_state,battery_soc,total_load_power,grid_connected,hour
+```
+
+- **Legacy (Simulated) CSV**: `microgrid_sensor_data.csv` — older column names such as `acs712_current`, `power_watts`, and `solar_production` may appear. The dashboard detects format and adapts to both naming schemes.
+
+## Troubleshooting
+
+- INA219 reads zero / dashboard shows 0 W:
+  - Ensure `VIN+` and `VIN-` are connected in series with the solar/power input.
+  - Verify `SDA`/`SCL` wiring (A4/A5 on Arduino Uno) and common ground.
+  - Use `serial_debug.py` or `smartgrid.py` diagnostic functions to view raw packets.
+
+- ACS712 shows negative current or negative power:
+  - Swap the two wires through the ACS712 sensing terminal to reverse orientation.
+  - If swapping isn't possible immediately, the dashboard displays absolute current values for convenience.
+
+- Serial port not found / `streamlit` not recognized:
+  - Activate the same Python environment used to install dependencies.
+  - Use the full venv Python to run Streamlit if `streamlit` isn't on PATH (example above).
+
+## Tips & Next Steps
+
+- To generate a larger dataset quickly for model testing, use `generate_training_data.py` which produces simulated `microgrid_sensor_data.csv`.
+- Connect INA219 to real solar panel or DC supply for accurate power readings — this improves training on real-world behavior.
+- Once you have stable hardware data, disable the temporary 12V fallback and absolute-value workarounds in `dashboard.py` so the system uses true measured values.
+
+---
+
+If you'd like, I can also:
+- Add a small wiring diagram image and include it in the repo,
+- Update `requirements.txt` to include any missing packages detected while running Streamlit,
+- Or open a PR with the README changes.
+
+
 - Solar production curves
 - Battery SOC trends
 - Sensor statistics (INA219 voltage, ACS712 current, ADC readings)
@@ -290,7 +382,6 @@ solar_current,battery_soc,total_load_power,cloud_cover,weather,classification
 
 - Pin 17 (BCM): Relay 1 (Tier 1 - Critical)
 - Pin 27 (BCM): Relay 2 (Tier 2 - Essential)
-- Pin 22 (BCM): Relay 3 (Tier 3 - Non-Critical)
 
 ### SPI (MCP3008 ADC)
 

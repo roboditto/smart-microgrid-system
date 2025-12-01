@@ -1,0 +1,9 @@
+streamlit 
+pandas 
+plotly 
+scikit-learn 
+numpy
+RPi.GPIO 
+spidev
+serial
+adafruit-circuitpython-ina219
